@@ -1,0 +1,5 @@
+agent-framework==1.0.0rc2
+agent-framework-azure-ai==1.0.0rc2
+agent-framework-devui==1.0.0b260225
+azure-identity
+agent-framework-redis==1.0.0b260225

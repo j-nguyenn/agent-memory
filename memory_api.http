@@ -1,0 +1,104 @@
+### Variables
+@endpoint = https://janguyen-3578-resource.services.ai.azure.com/api/projects/janguyen-3578
+@apiVersion = 2025-11-15-preview
+@storeName = my_memory_store
+
+# az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv
+
+
+@token = {{ token }}
+### List all memory stores
+GET {{endpoint}}/memory_stores?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+
+### Get a specific memory store
+GET {{endpoint}}/memory_stores/{{storeName}}?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+
+### Search memories (scope: user_123)
+POST {{endpoint}}/memory_stores/{{storeName}}:search_memories?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "scope": "user_123",
+  "items": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "show everything"
+        }
+      ]
+    }
+  ],
+  "options": {
+    "max_memories": 10
+  }
+}
+
+### Search memories (scope: default)
+POST {{endpoint}}/memory_stores/{{storeName}}:search_memories?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "scope": "default",
+  "items": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "show everything"
+        }
+      ]
+    }
+  ],
+  "options": {
+    "max_memories": 10
+  }
+}
+
+### Update memories
+POST {{endpoint}}/memory_stores/{{storeName}}:update_memories?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "scope": "user_123",
+  "items": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "I prefer dark roast coffee and usually drink it in the morning"
+        }
+      ]
+    }
+  ],
+  "update_delay": 0
+}
+
+### Get update status (use update_id from previous response)
+@updateId = 8eb4441d-db84-4b72-8347-b662b962cfe8
+GET {{endpoint}}/memory_stores/{{storeName}}/updates/{{updateId}}?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+
+### Delete memories for a scope
+POST {{endpoint}}/memory_stores/{{storeName}}:delete_scope?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "scope": "user_123"
+}
+
+### Delete a memory store
+DELETE {{endpoint}}/memory_stores/{{storeName}}?api-version={{apiVersion}}
+Authorization: Bearer {{token}}
