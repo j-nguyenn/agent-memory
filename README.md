@@ -44,7 +44,7 @@ After each run, the agent clears its memory. We want the ability to manage state
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Solution: Agent Context Providers
+## Use Agent Context Providers
 
 Context providers are an extensibility mechanism in the Microsoft Agent Framework that automatically inject relevant information into an agent's conversation before the AI model processes each message (`before_run`) and optionally after (`after_run`).
 
@@ -130,14 +130,6 @@ agent = client.as_agent(
 ---
 
 ### 4. Long-Term Memory
-#### Option A: FoundryMemoryProvider
-
-Memory in Foundry Agent Service is a managed, long-term memory solution. The Foundry Memory context provider enables semantic memory capabilities for agents using Azure AI Foundry Memory Store. It automatically:
-- Retrieves static (user profile) memories on first run
-- Searches for contextual memories based on conversation
-- Updates the memory store with new conversation messages
-
-
 
 #### Option B: Mem0ContextProvider
 
@@ -239,3 +231,21 @@ provider = Neo4jContextProvider(
 | `AzureAISearchContextProvider` | Enterprise RAG | Yes (Azure) | Hybrid + Semantic |
 | `Neo4jContextProvider` | Graph-enriched knowledge | Yes (Neo4j) | Vector + Graph |
 
+## Use Foundry Memory
+
+### Use memories via agent tool
+
+```
+
+TODO: What are the differences between use Memory Store via agent tool vs use context provider?
+
+
+```
+
+### FoundryMemoryProvider
+
+Memory in Foundry Agent Service is a managed, long-term memory solution. The Foundry Memory context provider enables semantic memory capabilities for agents using Azure AI Foundry Memory Store. It automatically:
+
+- Retrieves static (user profile) memories on first run
+- Searches for contextual memories based on conversation
+- Updates the memory store with new conversation messages

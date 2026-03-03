@@ -3,3 +3,5 @@ agent-framework-azure-ai==1.0.0rc2
 agent-framework-devui==1.0.0b260225
 azure-identity
 agent-framework-redis==1.0.0b260225
+azure-ai-projects==2.0.0b3
+agent-framework-core==1.0.0rc2

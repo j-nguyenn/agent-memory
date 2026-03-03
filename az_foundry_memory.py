@@ -11,239 +11,187 @@ Required environment variables:
   - AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME  (default: text-embedding-3-small)
 """
 
-import asyncio
 import logging
 import os
-from typing import Any
 
-from agent_framework import AgentSession, BaseContextProvider, SessionContext
-from agent_framework.azure import AzureOpenAIResponsesClient
+from agent_framework import Agent, InMemoryHistoryProvider
+from agent_framework.azure import AzureOpenAIResponsesClient, FoundryMemoryProvider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
-    MemorySearchOptions,
+    MemorySearchTool,
     MemoryStoreDefaultDefinition,
     MemoryStoreDefaultOptions,
 )
-from azure.identity import AzureCliCredential, DefaultAzureCredential
+from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Memory-store context provider
-# ---------------------------------------------------------------------------
+# azure-ai-projects==2.0.0b4
+# agent-framework-core==1.0.0rc2
 
-class MemoryStoreContextProvider(BaseContextProvider):
-    """Bridges the Azure AI Projects Memory Store into agent_framework sessions.
+"""Follows the tutorial at:
+https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/memory-usage?tabs=python
 
-    * ``before_run`` – searches the store for memories relevant to the latest
-      user messages and injects them into the system prompt.
-    * ``after_run``  – sends the latest exchange to the store so new memories
-      can be extracted asynchronously.
-    """
+Steps:
+    1. Create a memory store
+    2. Attach MemorySearchPreviewTool to an Agent Framework agent
+    3. Use DevUI for interactive chat and memory updates
+"""
 
-    def __init__(
-        self,
-        project_client: AIProjectClient,
-        memory_store_name: str,
-        scope: str,
-        max_memories: int = 10,
-        update_delay: int = 5,
-    ) -> None:
-        super().__init__("memory-store")
-        self._project_client = project_client
-        self._memory_store_name = memory_store_name
-        self._scope = scope
-        self._max_memories = max_memories
-        self._update_delay = update_delay
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    # -- helpers -------------------------------------------------------------
+# --- resolve env vars ---------------------------------------------------
+project_endpoint = os.environ.get(
+    "AZURE_AI_PROJECT_ENDPOINT",
+    os.environ.get("FOUNDRY_PROJECT_ENDPOINT", ""),
+)
+chat_model = os.environ.get(
+    "AZURE_OPENAI_RESPONSES_DEPLOYMENT_NAME",
+    os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", ""),
+)
+embedding_model = os.environ.get(
+    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small"
+)
 
-    @staticmethod
-    def _to_items(messages, last_n: int = 5) -> list[dict[str, str]]:
-        """Convert the last *n* framework messages to memory-API items."""
-        items: list[dict[str, str]] = []
-        for msg in messages[-last_n:]:
-            if hasattr(msg, "role") and hasattr(msg, "content"):
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                items.append({"role": msg.role, "content": content, "type": "message"})
-        return items
+# -----------------------------------------------------------------------
+# 1. Create a memory store
+# -----------------------------------------------------------------------
+credential = DefaultAzureCredential()
 
-    # -- hooks ---------------------------------------------------------------
+project_client = AIProjectClient(endpoint=project_endpoint, credential=credential)
 
-    async def before_run(
-        self,
-        *,
-        agent: Any,
-        session: AgentSession | None,
-        context: SessionContext,
-        state: dict[str, Any],
-    ) -> None:
-        items = self._to_items(context.get_messages(include_input=True))
-        if not items:
-            return
+memory_store_name = "my_memory_store"
 
-        try:
-            previous_search_id = state.get(self.source_id, {}).get("last_search_id")
-            search_response = await asyncio.to_thread(
-                self._project_client.memory_stores.search_memories,
-                name=self._memory_store_name,
-                scope=self._scope,
-                items=items,
-                previous_search_id=previous_search_id,
-                options=MemorySearchOptions(max_memories=self._max_memories),
-            )
+# Specify memory store options
+options = MemoryStoreDefaultOptions(
+    chat_summary_enabled=True,
+    user_profile_enabled=True,
+    user_profile_details=(
+        "Avoid irrelevant or sensitive data, such as age, financials, "
+        "precise location, and credentials"
+    ),
+)
 
-            if search_response.memories:
-                memory_text = "\n".join(
-                    f"- {m.memory_item.content}" for m in search_response.memories
-                )
-                context.extend_instructions(
-                    self.source_id,
-                    f"The following memories are stored about this user:\n{memory_text}\n"
-                    "Use these memories to personalize your responses when relevant.",
-                )
-                logger.info("Injected %d memories into context", len(search_response.memories))
+# Create memory store
+definition = MemoryStoreDefaultDefinition(
+    chat_model=chat_model,
+    embedding_model=embedding_model,
+    options=options,
+)
 
-            state.setdefault(self.source_id, {})["last_search_id"] = search_response.search_id
-        except Exception:
-            logger.warning("Memory search failed", exc_info=True)
+# Delete if it already exists so we start fresh
+try:
+    project_client.memory_stores.delete(memory_store_name)
+    logger.info("Deleted existing memory store '%s'", memory_store_name)
+except Exception:
+    pass
 
-    async def after_run(
-        self,
-        *,
-        agent: Any,
-        session: AgentSession | None,
-        context: SessionContext,
-        state: dict[str, Any],
-    ) -> None:
-        items = self._to_items(
-            context.get_messages(include_input=True, include_response=True),
-            last_n=2,
-        )
-        if not items:
-            return
+memory_store = project_client.memory_stores.create(
+    name=memory_store_name,
+    definition=definition,
+    description="Memory store for customer support agent",
+)
+print(f"Created memory store: {memory_store.name}")
 
-        try:
-            poller = await asyncio.to_thread(
-                self._project_client.memory_stores.begin_update_memories,
-                name=self._memory_store_name,
-                scope=self._scope,
-                items=items,
-                update_delay=self._update_delay,
-            )
-            logger.info("Memory update scheduled (ID: %s)", poller.update_id)
-        except Exception:
-            logger.warning("Memory update failed", exc_info=True)
+# -----------------------------------------------------------------------
+# 2. Use memories via an agent tool
+# -----------------------------------------------------------------------
+
+# Set scope to associate the memories with
+# You can also use "{{$userId}}" to take the TID and OID of the request
+# authentication header
+scope = "user_123"
+
+openai_client = project_client.get_openai_client()
+
+# Create memory search tool
+tool = MemorySearchTool(
+    memory_store_name=memory_store_name,
+    scope=scope,
+    update_delay=1,  # Wait 1 second of inactivity before updating memories
+    # In a real application, set this to a higher value like 300 (5 minutes, default)
+)
+
+# Create an Agent Framework agent for DevUI.
+# DevUI requires entities that implement run(), which this agent does.
+client = AzureOpenAIResponsesClient(
+    project_endpoint=project_endpoint,
+    deployment_name=chat_model,
+    credential=credential,
+)
+
+agent = client.as_agent(
+    name="MemoryAgentUsingTool",
+    description="Helpful assistant with Azure AI Foundry Memory Store via tool calling",
+    instructions="You are a helpful assistant that answers general questions.",
+    tools=[tool],
+)
+
+print(f"Agent ready for DevUI (id: {agent.id}, name: {agent.name})")
+
+memory_provider = FoundryMemoryProvider(
+    project_client=project_client,
+    memory_store_name=memory_store.name,
+    scope=scope,  # Scope memories to a specific user, if not set, the session_id
+    # will be used as scope, which means memories are only shared within the same session
+    update_delay=0,  # Do not wait to update memories after each interaction (for demo purposes)
+    # In production, consider setting a delay to batch updates and reduce costs
+)
+agent2 = Agent(
+    name="MemoryAgentUsingContextProvider",
+    client=client,
+    description="Helpful assistant with Azure AI Foundry Memory Store via context provider",
+    instructions="""You are a helpful assistant that remembers past conversations.
+        The memories from previous interactions are automatically provided to you.""",
+    context_providers=[memory_provider, InMemoryHistoryProvider(load_messages=False)],
+    default_options={"store": False},
+)
+# # -----------------------------------------------------------------------
+# # 3. Create a conversation
+# # -----------------------------------------------------------------------
+
+# # Create a conversation with the agent with memory tool enabled
+# conversation = openai_client.conversations.create()
+# print(f"Created conversation (id: {conversation.id})")
+
+# # Create an agent response to initial user message
+# response = openai_client.responses.create(
+#     input="I prefer dark roast coffee",
+#     conversation=conversation.id,
+#     extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+# )
+
+# print(f"Response output: {response.output_text}")
+
+# # After an inactivity in the conversation, memories will be extracted
+# # from the conversation and stored
+# print("Waiting for memories to be stored...")
+# time.sleep(65)
+
+# # -----------------------------------------------------------------------
+# # 4. New conversation – the agent should recall the preference
+# # -----------------------------------------------------------------------
+
+# # Create a new conversation
+# new_conversation = openai_client.conversations.create()
+# print(f"Created new conversation (id: {new_conversation.id})")
+
+# # Create an agent response with stored memories
+# new_response = openai_client.responses.create(
+#     input="Please order my usual coffee",
+#     conversation=new_conversation.id,
+#     extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+# )
+
+# print(f"Response output: {new_response.output_text}")
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap helpers
-# ---------------------------------------------------------------------------
-
-def _ensure_memory_store(
-    project_client: AIProjectClient,
-    name: str,
-    chat_model: str,
-    embedding_model: str,
-) -> None:
-    """Create the memory store (delete first if it already exists)."""
-    try:
-        project_client.memory_stores.delete(name)
-        logger.info("Deleted existing memory store '%s'", name)
-    except Exception:
-        pass
-
-    options = MemoryStoreDefaultOptions(
-        chat_summary_enabled=True,
-        user_profile_enabled=True,
-        user_profile_details=(
-            "Avoid irrelevant or sensitive data, such as age, financials, "
-            "precise location, and credentials"
-        ),
-    )
-    definition = MemoryStoreDefaultDefinition(
-        chat_model=chat_model,
-        embedding_model=embedding_model,
-        options=options,
-    )
-    store = project_client.memory_stores.create(
-        name=name,
-        definition=definition,
-        description="Memory store for DevUI assistant",
-    )
-    logger.info("Created memory store: %s (%s)", store.name, store.id)
-
-
-# ---------------------------------------------------------------------------
-# Main – launch DevUI
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    from agent_framework_devui import serve
-
-    load_dotenv()
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    # --- resolve env vars ---------------------------------------------------
-    project_endpoint = os.environ.get(
-        "AZURE_AI_PROJECT_ENDPOINT",
-        os.environ.get("FOUNDRY_PROJECT_ENDPOINT", ""),
-    )
-    chat_model = os.environ.get(
-        "AZURE_OPENAI_RESPONSES_DEPLOYMENT_NAME",
-        os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", ""),
-    )
-    embedding_model = os.environ.get(
-        "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small"
-    )
-
-    memory_store_name = "my_memory_store"
-    scope = "user_123"
-
-    # --- project client (for memory store API) ------------------------------
-    credential = DefaultAzureCredential()
-    project_client = AIProjectClient(endpoint=project_endpoint, credential=credential)
-
-    # --- ensure memory store exists -----------------------------------------
-    _ensure_memory_store(project_client, memory_store_name, chat_model, embedding_model)
-
-    # --- build the agent ----------------------------------------------------
-    responses_client = AzureOpenAIResponsesClient(
-        project_endpoint=project_endpoint,
-        deployment_name=chat_model,
-        credential=AzureCliCredential(),
-    )
-
-    memory_provider = MemoryStoreContextProvider(
-        project_client=project_client,
-        memory_store_name=memory_store_name,
-        scope=scope,
-    )
-
-    agent = responses_client.as_agent(
-        name="MemoryAssistant",
-        instructions=(
-            "You are a helpful assistant that answers general questions. "
-            "When the user tells you something personal (preferences, habits, etc.), "
-            "acknowledge it warmly. Use any recalled memories to personalize your responses."
-        ),
-        context_providers=[memory_provider],
-    )
-
-    # --- serve --------------------------------------------------------------
-    logger.info("=" * 60)
-    logger.info("Starting Memory Store Agent (DevUI)")
-    logger.info("=" * 60)
-    logger.info("")
-    logger.info("  Memory store : %s", memory_store_name)
-    logger.info("  Scope        : %s", scope)
-    logger.info("  Chat model   : %s", chat_model)
-    logger.info("  Embedding    : %s", embedding_model)
-    logger.info("")
-
-    serve(entities=[agent], port=8090, auto_open=True)
 
 
 if __name__ == "__main__":
-    main()
+    from agent_framework_devui import serve
+
+    serve(entities=[agent, agent2], port=8090, auto_open=True)
+    
