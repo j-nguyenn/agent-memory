@@ -1,13 +1,5 @@
 
-# ADR-005: Agent Memory
-
-## Status
-
-Proposed
-
-## Date
-
-2026-02-18
+# Agent Memory
 
 ## Context
 
